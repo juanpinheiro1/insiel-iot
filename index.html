@@ -215,7 +215,7 @@ function renderGeral(){
     var gs=(S.grand[d.id]||[]).filter(function(g){return g.papel==='leitura'&&g.gravar&&g.codigo!=='battery_percentage'}).sort(ordemLeitura);
     var evs=abertos.filter(function(e){return e.dispositivo_id===d.id});
     h+='<div class="card'+(evs.some(function(e){return e.severidade==='critico'})?' sev-critico':evs.length?' sev-aviso':'')+'" onclick="A.abrir(\''+d.id+'\')">'+
-      '<div class="hd"><div><div class="nm">'+esc(d.nome)+'</div><div class="sub">'+esc((d.locais&&d.locais.nome)||'')+(d.tipos_dispositivo?' · '+esc(d.tipos_dispositivo.nome):'')+'</div></div>'+statusChip(d)+'</div>'+
+      '<div class="hd"><div><div class="nm">'+esc(d.nome)+'</div><div class="sub">'+[d.locais&&d.locais.nome,d.tipos_dispositivo&&d.tipos_dispositivo.nome].filter(Boolean).map(esc).join(' · ')+'</div></div>'+statusChip(d)+'</div>'+
       '<div class="vals">'+gs.slice(0,4).map(function(g){var v=d.estado_atual?d.estado_atual[g.codigo]:null;
         return '<div class="val"><div class="b">'+fmtVal(g,v)+'<span class="u">'+(typeof v==='number'&&g.tipo_valor!=='Boolean'?esc(unidade(g.unidade)):'')+'</span></div><div class="l">'+esc(g.nome)+'</div></div>'}).join('')+'</div>'+
       '<div class="foot">'+batChip(d)+(evs.length?'<span class="chip '+(evs.some(function(e){return e.severidade==='critico'})?'crit':'warn')+'">'+evs.length+' evento'+(evs.length>1?'s':'')+'</span>':'')+
