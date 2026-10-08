@@ -261,6 +261,14 @@ function renderDisp(){
     h+='</div><div id="cmd-log" style="margin-top:12px"></div></div>';
   }
   h+='<div class="panel"><h2>Ultimas leituras gravadas</h2><div id="ult" class="tblwrap"><div class="empty">Carregando…</div></div></div>';
+  if(isAdmin()&&gs.length){
+    h+='<div class="panel"><h2>Grandezas deste dispositivo</h2><p class="mini" style="margin:-6px 0 10px">O que a plataforma le do aparelho. <b>Leitura</b> aparece no card; <b>Gravar</b> guarda o historico para graficos e regras; <b>Config</b> e parametro do aparelho.</p><div class="tblwrap"><table><tr><th>Nome</th><th>Codigo</th><th>Tipo</th><th>Papel</th><th>Gravar</th><th></th></tr>'+
+      gs.map(function(g){return '<tr><td><input id="g-nome-'+g.id+'" value="'+esc(g.nome)+'" style="padding:5px 8px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--ink);font-size:13px;min-width:140px"></td>'+
+        '<td class="mini">'+esc(g.codigo)+(g.comandavel?' <span class="chip brand">comandavel</span>':'')+'</td><td class="mini">'+esc(g.tipo_valor||'')+(g.unidade?' '+esc(unidade(g.unidade)):'')+'</td>'+
+        '<td><select id="g-papel-'+g.id+'" style="padding:5px;border-radius:7px;border:1px solid var(--line);background:var(--bg);color:var(--ink);font-size:13px">'+['leitura','estado','config'].map(function(p){return '<option value="'+p+'"'+(p===g.papel?' selected':'')+'>'+p+'</option>'}).join('')+'</select></td>'+
+        '<td><button class="tog '+(g.gravar?'on':'')+'" id="g-grav-'+g.id+'" onclick="this.classList.toggle(\'on\')"></button></td>'+
+        '<td><button class="btn sec sm" onclick="A.grandezaSalvar(\''+g.id+'\')">Salvar</button></td></tr>'}).join('')+'</table></div></div>';
+  }
   el('main').innerHTML=h;
   if(numer.length)loadChart().catch(fail);
   loadUltimas().catch(fail);
@@ -409,6 +417,8 @@ window.A={
     var x=r.data&&r.data[0];toast(x&&x.erro?'Falha: '+x.erro:'Coleta feita: '+(x?x.leituras_gravadas:0)+' leituras novas');await refresh()}catch(e){fail(e);if(b){b.disabled=false;b.textContent='Atualizar agora'}}},
   sincronizar:async function(){var b=el('btn-sync');try{b.disabled=true;b.textContent='Sincronizando…';var r=await sb.rpc('sincronizar_agora');if(r.error)throw r.error;toast(r.data+' dispositivo(s) sincronizado(s)');await refresh()}catch(e){fail(e);b.disabled=false;b.textContent='Sincronizar dispositivos'}},
   salvarDisp:async function(){try{var r=await sb.from('dispositivos').update({nome:val('d-nome'),local_id:val('d-local')||null,ativo:val('d-ativo')==='true'}).eq('id',S.dispId);if(r.error)throw r.error;toast('Salvo');await refresh()}catch(e){fail(e)}},
+  grandezaSalvar:async function(id){try{var p={nome:val('g-nome-'+id)||undefined,papel:el('g-papel-'+id).value,gravar:el('g-grav-'+id).classList.contains('on')};
+    var r=await sb.from('grandezas').update(p).eq('id',id);if(r.error)throw r.error;toast('Grandeza salva');await refresh()}catch(e){fail(e)}},
   cmd:async function(code,v){await enviarCmd(code,v)},
   cmdSel:async function(code){await enviarCmd(code,val('c-'+code))},
   cmdNum:async function(code){var g=gDe(S.dispId,code);var v=Number(val('c-'+code));if(isNaN(v))return toast('Valor invalido');await enviarCmd(code,Math.round(v*Math.pow(10,g.escala||0)))},
