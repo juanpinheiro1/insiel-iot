@@ -113,8 +113,9 @@ var SB_URL='https://puepmnyffpfjttxmwfjt.supabase.co';
 var SB_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB1ZXBtbnlmZnBmanR0eG13Zmp0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk2NTMzMzksImV4cCI6MjEwNTIyOTMzOX0.6waSiEVZE0Fm2QraExivstM8qjzK7NGQ6698wmzHxjw';
 var sb=window.supabase.createClient(SB_URL,SB_KEY,{db:{schema:'iot'}});
 
-var S={perfis:[],perfil:null,view:'geral',dispId:null,disp:[],grand:{},locais:[],tipos:[],fontes:[],eventos:[],regras:[],
-       evFiltro:'abertos',chartCode:null,chartPer:24,chart:null,regraEdit:null,timer:null};
+var S={perfis:[],perfil:null,view:'geral',dispId:null,disp:[],grand:{},locais:[],tipos:[],fontes:[],eventos:[],regras:[],agendas:[],
+       evFiltro:'abertos',chartCode:null,chartPer:24,chart:null,regraEdit:null,agendaEdit:null,timer:null};
+var DIAS=['Dom','Seg','Ter','Qua','Qui','Sex','Sab'];
 
 // ---------- utilitarios ----------
 function el(id){return document.getElementById(id)}
@@ -151,12 +152,35 @@ async function loadBase(){
     sb.from('eventos').select('*').eq('cliente_id',cid).order('aberto_em',{ascending:false}).limit(300),
     sb.from('regras').select('*').eq('cliente_id',cid).order('nome'),
     sb.from('v_fontes').select('*').eq('cliente_id',cid),
-    sb.from('tipos_dispositivo').select('*').order('nome')
+    sb.from('tipos_dispositivo').select('*').order('nome'),
+    sb.from('agendas').select('*').eq('cliente_id',cid).order('nome')
   ]);
   for(var i=0;i<r.length;i++)if(r[i].error)throw r[i].error;
   S.disp=r[0].data;S.grand={};
   r[1].data.forEach(function(g){(S.grand[g.dispositivo_id]=S.grand[g.dispositivo_id]||[]).push(g)});
-  S.locais=r[2].data;S.eventos=r[3].data;S.regras=r[4].data;S.fontes=r[5].data;S.tipos=r[6].data;
+  S.locais=r[2].data;S.eventos=r[3].data;S.regras=r[4].data;S.fontes=r[5].data;S.tipos=r[6].data;S.agendas=r[7].data;
+}
+function localNome(id){for(var i=0;i<S.locais.length;i++)if(S.locais[i].id===id)return S.locais[i].nome;return id?'?':'Todos os locais'}
+// grandezas comandaveis disponiveis num escopo (local e/ou dispositivo), uma por codigo
+function codigosComandaveis(localId,dispId){
+  var m={};S.disp.forEach(function(d){if(dispId&&d.id!==dispId)return;if(!dispId&&localId&&d.local_id!==localId)return;
+    (S.grand[d.id]||[]).forEach(function(g){if(g.comandavel&&!m[g.codigo])m[g.codigo]=g})});
+  return Object.keys(m).sort().map(function(k){return m[k]});
+}
+function valInputHtml(id,cur,gg){
+  if(!gg)return '<input id="'+id+'" value="'+esc(cur==null?'':JSON.stringify(cur))+'" placeholder="valor">';
+  if(gg.tipo_valor==='Boolean')return '<select id="'+id+'"><option value="true"'+(cur===true?' selected':'')+'>Ligar</option><option value="false"'+(cur===false?' selected':'')+'>Desligar</option><option value=""'+(cur==null?' selected':'')+'>(nenhum)</option></select>';
+  if(gg.tipo_valor==='Enum')return '<select id="'+id+'"><option value="">(nenhum)</option>'+((gg.faixa||{}).range||[]).map(function(o){return '<option value="'+esc(o)+'"'+(o===cur?' selected':'')+'>'+esc(ENUM_PT[o]||o)+'</option>'}).join('')+'</select>';
+  return '<input id="'+id+'" type="number" step="any" value="'+(cur==null?'':cur/Math.pow(10,gg.escala||0))+'">';
+}
+// agenda ligada agora? (mesma logica do banco, no fuso do navegador, so para exibicao)
+function agendaLigadaAgora(a){
+  var n=new Date(),dia=n.getDay(),h=n.getHours()*60+n.getMinutes();
+  function m(t){var p=t.split(':');return Number(p[0])*60+Number(p[1])}
+  var li=m(a.hora_ligar),de=m(a.hora_desligar),data=n.toISOString().slice(0,10);
+  if(de>li)return a.dias.indexOf(dia)>-1&&a.excecoes.indexOf(data)<0&&h>=li&&h<de;
+  if(h>=li)return a.dias.indexOf(dia)>-1&&a.excecoes.indexOf(data)<0;
+  var ontem=new Date(n.getTime()-86400000);return a.dias.indexOf((dia+6)%7)>-1&&a.excecoes.indexOf(ontem.toISOString().slice(0,10))<0&&h<de;
 }
 async function refresh(){try{await loadBase();render();}catch(e){fail(e)}}
 
@@ -166,14 +190,14 @@ function render(){
   var abertos=S.eventos.filter(function(e){return e.status!=='fechado'}).length;
   var h='<div class="top"><div class="topin">'+
     '<div class="logo"><i>&#9673;</i> Insiel IoT</div>'+
-    '<nav>'+['geral|Visao geral','eventos|Eventos','regras|Regras','config|Configuracoes'].map(function(x){var p=x.split('|');
+    '<nav>'+['geral|Visao geral','eventos|Eventos','regras|Regras','agendas|Agendas','config|Configuracoes'].map(function(x){var p=x.split('|');
       return '<button class="'+((S.view===p[0]||(p[0]==='geral'&&S.view==='disp'))?'on':'')+'" onclick="A.go(\''+p[0]+'\')">'+p[1]+(p[0]==='eventos'&&abertos?'<span class="n">'+abertos+'</span>':'')+'</button>'}).join('')+'</nav>'+
     '<div class="sp"></div>';
   if(S.perfis.length>1){h+='<select class="mini" onchange="A.trocaCliente(this.value)" style="padding:5px;border-radius:7px;border:1px solid var(--line);background:var(--bg);color:var(--ink)">'+S.perfis.map(function(p){return '<option value="'+p.cliente_id+'"'+(p.cliente_id===S.perfil.cliente_id?' selected':'')+'>'+esc(p.cliente)+'</option>'}).join('')+'</select>'}
   else h+='<span class="who">'+esc(S.perfil.cliente)+'</span>';
   h+='<button class="btn sec sm" onclick="A.sair()">Sair</button></div></div><main id="main"></main>';
   el('app').innerHTML=h;
-  ({geral:renderGeral,disp:renderDisp,eventos:renderEventos,regras:renderRegras,config:renderConfig})[S.view]();
+  ({geral:renderGeral,disp:renderDisp,eventos:renderEventos,regras:renderRegras,agendas:renderAgendas,config:renderConfig})[S.view]();
 }
 
 function renderLogin(){
@@ -210,18 +234,34 @@ function renderGeral(){
     '</div>';
   h+='<div class="row" style="justify-content:space-between;margin-bottom:12px"><h1>Dispositivos</h1><button class="btn sec sm" id="btn-col" onclick="A.coletarAgora()">&#8635; Atualizar agora</button></div>';
   if(!S.disp.length)h+='<div class="panel empty">Nenhum dispositivo. Va em Configuracoes e sincronize a integracao.</div>';
-  h+='<div class="grid">';
-  S.disp.forEach(function(d){
+  function cardHtml(d,mostraLocal){
     var gs=(S.grand[d.id]||[]).filter(function(g){return g.papel==='leitura'&&g.gravar&&g.codigo!=='battery_percentage'}).sort(ordemLeitura);
     var evs=abertos.filter(function(e){return e.dispositivo_id===d.id});
-    h+='<div class="card'+(evs.some(function(e){return e.severidade==='critico'})?' sev-critico':evs.length?' sev-aviso':'')+'" onclick="A.abrir(\''+d.id+'\')">'+
-      '<div class="hd"><div><div class="nm">'+esc(d.nome)+'</div><div class="sub">'+[d.locais&&d.locais.nome,d.tipos_dispositivo&&d.tipos_dispositivo.nome].filter(Boolean).map(esc).join(' · ')+'</div></div>'+statusChip(d)+'</div>'+
+    return '<div class="card'+(evs.some(function(e){return e.severidade==='critico'})?' sev-critico':evs.length?' sev-aviso':'')+'" onclick="A.abrir(\''+d.id+'\')">'+
+      '<div class="hd"><div><div class="nm">'+esc(d.nome)+'</div><div class="sub">'+[mostraLocal&&d.locais&&d.locais.nome,d.tipos_dispositivo&&d.tipos_dispositivo.nome].filter(Boolean).map(esc).join(' · ')+'</div></div>'+statusChip(d)+'</div>'+
       '<div class="vals">'+gs.slice(0,4).map(function(g){var v=d.estado_atual?d.estado_atual[g.codigo]:null;
         return '<div class="val"><div class="b">'+fmtVal(g,v)+'<span class="u">'+(typeof v==='number'&&g.tipo_valor!=='Boolean'?esc(unidade(g.unidade)):'')+'</span></div><div class="l">'+esc(g.nome)+'</div></div>'}).join('')+'</div>'+
       '<div class="foot">'+batChip(d)+(evs.length?'<span class="chip '+(evs.some(function(e){return e.severidade==='critico'})?'crit':'warn')+'">'+evs.length+' evento'+(evs.length>1?'s':'')+'</span>':'')+
       '<span style="margin-left:auto">leitura '+ago(d.ultima_leitura_em)+(d.ultima_mudanca_em?' · mudou '+ago(d.ultima_mudanca_em):'')+'</span></div></div>';
-  });
-  h+='</div>';
+  }
+  // com mais de um local, agrupa por local (loja, galpao...) com resumo no cabecalho
+  var agrupar=S.locais.length>1;
+  if(!agrupar){h+='<div class="grid">'+S.disp.map(function(d){return cardHtml(d,true)}).join('')+'</div>'}
+  else{
+    var grupos=S.locais.map(function(l){return {nome:l.nome,id:l.id,ds:S.disp.filter(function(d){return d.local_id===l.id})}});
+    var semLocal=S.disp.filter(function(d){return !d.local_id});if(semLocal.length)grupos.push({nome:'Sem local',id:null,ds:semLocal});
+    grupos.forEach(function(g){
+      if(!g.ds.length)return;
+      var gon=g.ds.filter(function(d){return d.online===true}).length;
+      var gev=abertos.filter(function(e){return g.ds.some(function(d){return d.id===e.dispositivo_id})});
+      var temp=null;g.ds.forEach(function(d){if(temp==null&&d.estado_atual&&typeof d.estado_atual.va_temperature==='number')temp=d.estado_atual.va_temperature});
+      h+='<div class="panel" style="padding:12px 16px"><div class="row" style="justify-content:space-between;margin-bottom:10px"><h2 style="margin:0">'+esc(g.nome)+'</h2><div class="row">'+
+        (temp!=null?'<span class="chip muted">'+fmtN(temp)+' °C</span>':'')+
+        '<span class="chip '+(gon===g.ds.length?'ok':'crit')+'">'+gon+'/'+g.ds.length+' online</span>'+
+        (gev.length?'<span class="chip '+(gev.some(function(e){return e.severidade==='critico'})?'crit':'warn')+'">'+gev.length+' evento'+(gev.length>1?'s':'')+'</span>':'<span class="chip ok">sem eventos</span>')+
+        '</div></div><div class="grid">'+g.ds.map(function(d){return cardHtml(d,false)}).join('')+'</div></div>';
+    });
+  }
   el('main').innerHTML=h;
 }
 
@@ -350,12 +390,7 @@ function regraForm(){
   var g=gDe(r.dispositivo_id,r.codigo);var isNum=g&&(g.tipo_valor==='Integer'||g.tipo_valor==='Boolean');
   var ad=dispById(r.acao_dispositivo_id);var acs=ad?(S.grand[ad.id]||[]).filter(function(x){return x.comandavel}):[];
   var ag=r.acao_codigo?gDe(r.acao_dispositivo_id,r.acao_codigo):null;
-  function valInput(id,cur,gg){
-    if(!gg)return '<input id="'+id+'" value="'+esc(cur==null?'':JSON.stringify(cur))+'" placeholder="valor">';
-    if(gg.tipo_valor==='Boolean')return '<select id="'+id+'"><option value="true"'+(cur===true?' selected':'')+'>Ligar</option><option value="false"'+(cur===false?' selected':'')+'>Desligar</option><option value=""'+(cur==null?' selected':'')+'>(nenhum)</option></select>';
-    if(gg.tipo_valor==='Enum')return '<select id="'+id+'"><option value="">(nenhum)</option>'+((gg.faixa||{}).range||[]).map(function(o){return '<option value="'+esc(o)+'"'+(o===cur?' selected':'')+'>'+esc(ENUM_PT[o]||o)+'</option>'}).join('')+'</select>';
-    return '<input id="'+id+'" type="number" step="any" value="'+(cur==null?'':cur/Math.pow(10,gg.escala||0))+'">';
-  }
+  var valInput=valInputHtml;
   return '<div class="panel" style="border-color:var(--brand)"><h2>'+(r.id?'Editar regra':'Nova regra')+'</h2><div class="frm">'+
     '<div class="fld" style="grid-column:1/-1"><label>Nome</label><input id="r-nome" value="'+esc(r.nome||'')+'" placeholder="Ex.: Temperatura alta no galpao"></div>'+
     '<div class="fld"><label>Dispositivo</label><select id="r-disp" onchange="A.regraCampo(\'dispositivo_id\',this.value)">'+S.disp.map(function(x){return '<option value="'+x.id+'"'+(x.id===r.dispositivo_id?' selected':'')+'>'+esc(x.nome)+'</option>'}).join('')+'</select></div>'+
@@ -381,6 +416,58 @@ function lerValor(id,gg){
   return Math.round(Number(v)*Math.pow(10,gg.escala||0));
 }
 
+// ---------- agendas ----------
+function agendaDesc(a){
+  var gg=codigosComandaveis(a.local_id,a.dispositivo_id).filter(function(g){return g.codigo===a.codigo})[0];
+  var esc1=a.dispositivo_id?esc(dispNome(a.dispositivo_id)):esc(localNome(a.local_id));
+  return esc1+' · '+esc(gg?gg.nome:a.codigo)+' · '+a.dias.slice().sort().map(function(d){return DIAS[d]}).join(', ')+' · '+a.hora_ligar.slice(0,5)+' a '+a.hora_desligar.slice(0,5)+
+    (a.setpoint_codigo?' · mantem '+esc(a.setpoint_codigo)+' = '+esc(JSON.stringify(a.setpoint_valor)):'')+(a.excecoes.length?' · '+a.excecoes.length+' excecao(oes)':'');
+}
+function renderAgendas(){
+  var h='<div class="row" style="justify-content:space-between;margin-bottom:12px"><div><h1>Agendas</h1><div class="mini">Horarios de funcionamento: liga no inicio, desliga no fim e, se quiser, mantem um ajuste (ex.: temperatura) enquanto ligado.</div></div>'+(isAdmin()?'<button class="btn sm" onclick="A.agendaNova()">+ Nova agenda</button>':'')+'</div>';
+  if(S.agendaEdit)h+=agendaForm();
+  if(!S.agendas.length)h+='<div class="panel empty">Nenhuma agenda.</div>';
+  h+=S.agendas.map(function(a){
+    var on=agendaLigadaAgora(a);
+    return '<div class="panel" style="padding:12px 16px"><div class="row" style="justify-content:space-between"><div><div style="font-weight:600">'+esc(a.nome)+' '+(a.ativa?'':'<span class="chip muted">inativa</span>')+'</div><div class="mini">'+agendaDesc(a)+'</div></div>'+
+      '<div class="row">'+(a.ativa?'<span class="chip '+(on?'ok':'muted')+'">agora: '+(on?'ligado':'desligado')+'</span>':'')+
+      (isAdmin()?'<button class="tog '+(a.ativa?'on':'')+'" onclick="A.agendaAtiva(\''+a.id+'\','+(!a.ativa)+')"></button><button class="btn sec sm" onclick="A.agendaEditar(\''+a.id+'\')">Editar</button><button class="btn sec sm" onclick="A.agendaExcluir(\''+a.id+'\')">Excluir</button>':'')+'</div></div></div>';
+  }).join('');
+  el('main').innerHTML=h;
+}
+function agendaForm(){
+  var a=S.agendaEdit;
+  var cods=codigosComandaveis(a.local_id,a.dispositivo_id);
+  if(!a.codigo&&cods.length)a.codigo=cods[0].codigo;
+  var g=cods.filter(function(x){return x.codigo===a.codigo})[0];
+  var sg=a.setpoint_codigo?cods.filter(function(x){return x.codigo===a.setpoint_codigo})[0]:null;
+  var dispsEscopo=S.disp.filter(function(d){return !a.local_id||d.local_id===a.local_id});
+  function fmtData(s){var p=s.split('-');return p[2]+'/'+p[1]+'/'+p[0]}
+  return '<div class="panel" style="border-color:var(--brand)"><h2>'+(a.id?'Editar agenda':'Nova agenda')+'</h2><div class="frm">'+
+    '<div class="fld" style="grid-column:1/-1"><label>Nome</label><input id="a-nome" value="'+esc(a.nome||'')+'" placeholder="Ex.: Horario de funcionamento das lojas"></div>'+
+    '<div class="fld"><label>Local</label><select id="a-local" onchange="A.agendaCampo(\'local_id\',this.value)"><option value="">Todos os locais</option>'+S.locais.map(function(l){return '<option value="'+l.id+'"'+(l.id===a.local_id?' selected':'')+'>'+esc(l.nome)+'</option>'}).join('')+'</select></div>'+
+    '<div class="fld"><label>Dispositivo</label><select id="a-disp" onchange="A.agendaCampo(\'dispositivo_id\',this.value)"><option value="">Todos do escopo</option>'+dispsEscopo.map(function(d){return '<option value="'+d.id+'"'+(d.id===a.dispositivo_id?' selected':'')+'>'+esc(d.nome)+'</option>'}).join('')+'</select></div>'+
+    '<div class="fld"><label>Comando</label><select id="a-cod" onchange="A.agendaCampo(\'codigo\',this.value)">'+(cods.length?cods.map(function(x){return '<option value="'+x.codigo+'"'+(x.codigo===a.codigo?' selected':'')+'>'+esc(x.nome)+' ('+esc(x.codigo)+')</option>'}).join(''):'<option value="">nenhum dispositivo comandavel no escopo</option>')+'</select></div>'+
+    '<div class="fld"><label>Valor ao ligar</label>'+valInputHtml('a-vl',a.valor_ligar==null?(g&&g.tipo_valor==='Boolean'?true:null):a.valor_ligar,g)+'</div>'+
+    '<div class="fld"><label>Valor ao desligar</label>'+valInputHtml('a-vd',a.valor_desligar==null?(g&&g.tipo_valor==='Boolean'?false:null):a.valor_desligar,g)+'</div>'+
+    '<div class="fld" style="grid-column:1/-1"><label>Dias</label><div class="row">'+DIAS.map(function(n,i){return '<label style="display:flex;gap:4px;align-items:center;font-size:14px"><input type="checkbox" id="a-dia-'+i+'"'+((a.dias||[1,2,3,4,5,6]).indexOf(i)>-1?' checked':'')+'>'+n+'</label>'}).join('')+'</div></div>'+
+    '<div class="fld"><label>Liga as</label><input id="a-hl" type="time" value="'+esc((a.hora_ligar||'08:00').slice(0,5))+'"></div>'+
+    '<div class="fld"><label>Desliga as</label><input id="a-hd" type="time" value="'+esc((a.hora_desligar||'18:00').slice(0,5))+'"></div>'+
+    '<div class="fld"><label>Reenvio minimo (min)</label><input id="a-re" type="number" value="'+(a.reenviar_min==null?30:a.reenviar_min)+'"></div>'+
+    '<div class="fld" style="grid-column:1/-1"><label>Excecoes (datas sem funcionamento, dd/mm/aaaa separadas por virgula)</label><input id="a-exc" value="'+esc((a.excecoes||[]).map(fmtData).join(', '))+'" placeholder="25/12/2026, 01/01/2027"></div>'+
+    '<div class="fld"><label>Manter enquanto ligado (opcional)</label><select id="a-sc" onchange="A.agendaCampo(\'setpoint_codigo\',this.value)"><option value="">nenhum</option>'+cods.filter(function(x){return x.codigo!==a.codigo}).map(function(x){return '<option value="'+x.codigo+'"'+(x.codigo===a.setpoint_codigo?' selected':'')+'>'+esc(x.nome)+' ('+esc(x.codigo)+')</option>'}).join('')+'</select></div>'+
+    (a.setpoint_codigo?'<div class="fld"><label>Valor a manter'+(sg&&sg.unidade?' ('+esc(unidade(sg.unidade))+')':'')+'</label>'+valInputHtml('a-sv',a.setpoint_valor,sg)+'</div>':'')+
+    '</div><div class="row" style="margin-top:12px"><button class="btn" onclick="A.agendaSalvar()">Salvar</button><button class="btn sec" onclick="A.agendaCancelar()">Cancelar</button></div></div>';
+}
+function agendaLerForm(){
+  var a=S.agendaEdit;a.nome=val('a-nome');a.hora_ligar=val('a-hl');a.hora_desligar=val('a-hd');a.reenviar_min=Number(val('a-re'))||30;
+  a.dias=DIAS.map(function(_,i){return el('a-dia-'+i)&&el('a-dia-'+i).checked?i:-1}).filter(function(i){return i>=0});
+  a.excecoes=val('a-exc').split(',').map(function(s){s=s.trim();var m=s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);return m?m[3]+'-'+m[2]+'-'+m[1]:null}).filter(Boolean);
+  var cods=codigosComandaveis(a.local_id,a.dispositivo_id);var g=cods.filter(function(x){return x.codigo===a.codigo})[0];
+  a.valor_ligar=lerValor('a-vl',g);a.valor_desligar=lerValor('a-vd',g);
+  if(a.setpoint_codigo){var sg=cods.filter(function(x){return x.codigo===a.setpoint_codigo})[0];a.setpoint_valor=lerValor('a-sv',sg)}else a.setpoint_valor=null;
+}
+
 function renderConfig(){
   var h='<h1 style="margin-bottom:12px">Configuracoes</h1>';
   h+='<div class="panel"><h2>Integracoes</h2><div class="tblwrap"><table><tr><th>Nome</th><th>Tipo</th><th>Ultima coleta</th><th>Ultima sincronizacao</th><th>Situacao</th></tr>'+
@@ -389,12 +476,14 @@ function renderConfig(){
   h+='<div class="panel"><h2>Locais</h2>'+(S.locais.length?'<div class="row">'+S.locais.map(function(l){return '<span class="chip brand">'+esc(l.nome)+'</span>'}).join('')+'</div>':'<p class="mini">Nenhum local.</p>')+
     (isAdmin()?'<div class="row" style="margin-top:10px"><div class="fld" style="max-width:260px"><label>Novo local</label><input id="nl-nome" placeholder="Ex.: Galpao 2"></div><button class="btn sm" style="align-self:flex-end" onclick="A.novoLocal()">Adicionar</button></div>':'')+'</div>';
   h+='<div class="panel"><h2>Usuarios</h2><div id="usr"><div class="empty">Carregando…</div></div>'+
-    (isAdmin()?'<div class="row" style="margin-top:10px"><div class="fld"><label>Nome</label><input id="nu-nome"></div><div class="fld"><label>E-mail</label><input id="nu-email" type="email"></div><div class="fld" style="max-width:140px"><label>Papel</label><select id="nu-papel"><option value="operacao">Operacao</option><option value="admin">Admin</option></select></div><button class="btn sm" style="align-self:flex-end" onclick="A.novoUsuario()">Autorizar</button></div><p class="mini">O usuario autorizado cria a senha na tela de login em "Primeiro acesso".</p>':'')+'</div>';
+    (isAdmin()?'<div class="row" style="margin-top:10px"><div class="fld"><label>Nome</label><input id="nu-nome"></div><div class="fld"><label>E-mail</label><input id="nu-email" type="email"></div><div class="fld" style="max-width:140px"><label>Papel</label><select id="nu-papel"><option value="operacao">Operacao</option><option value="admin">Admin</option></select></div><button class="btn sm" style="align-self:flex-end" onclick="A.novoUsuario()">Autorizar</button></div>'+
+      (S.locais.length>1?'<div class="fld" style="margin-top:8px"><label>Acesso a locais (nenhum marcado = todos)</label><div class="row">'+S.locais.map(function(l){return '<label style="display:flex;gap:4px;align-items:center;font-size:14px"><input type="checkbox" class="nu-local" value="'+l.id+'">'+esc(l.nome)+'</label>'}).join('')+'</div></div>':'')+
+      '<p class="mini">O usuario autorizado cria a senha na tela de login em "Primeiro acesso".</p>':'')+'</div>';
   h+='<div class="panel"><h2>Catalogo de tipos</h2><div class="tblwrap"><table><tr><th>Tipo</th><th>Alimentacao</th><th>Observacao</th></tr>'+S.tipos.map(function(t){return '<tr><td><b>'+esc(t.nome)+'</b> <span class="mini">'+esc(t.codigo)+'</span></td><td>'+esc(t.alimentacao)+'</td><td class="mini">'+esc(t.descricao||'')+'</td></tr>'}).join('')+'</table></div></div>';
   h+='<p class="mini">Insiel IoT · v1 · coleta a cada 5 min pela nuvem do fabricante · dados no Supabase (regiao Sao Paulo).</p>';
   el('main').innerHTML=h;
   sb.from('usuarios').select('*').eq('cliente_id',S.perfil.cliente_id).order('nome').then(function(r){var b=el('usr');if(!b)return;if(r.error){b.innerHTML=esc(r.error.message);return}
-    b.innerHTML='<div class="tblwrap"><table><tr><th>Nome</th><th>E-mail</th><th>Papel</th>'+(isAdmin()?'<th></th>':'')+'</tr>'+r.data.map(function(u){return '<tr><td>'+esc(u.nome||'')+'</td><td>'+esc(u.email)+'</td><td>'+(u.papel==='admin'?'<span class="chip brand">Admin</span>':'<span class="chip info">Operacao</span>')+'</td>'+(isAdmin()?'<td>'+(u.email.toLowerCase()!==S.perfil.email.toLowerCase()?'<button class="btn sec sm" onclick="A.removerUsuario(\''+u.id+'\')">Remover</button>':'')+'</td>':'')+'</tr>'}).join('')+'</table></div>'});
+    b.innerHTML='<div class="tblwrap"><table><tr><th>Nome</th><th>E-mail</th><th>Papel</th><th>Locais</th>'+(isAdmin()?'<th></th>':'')+'</tr>'+r.data.map(function(u){return '<tr><td>'+esc(u.nome||'')+'</td><td>'+esc(u.email)+'</td><td>'+(u.papel==='admin'?'<span class="chip brand">Admin</span>':'<span class="chip info">Operacao</span>')+'</td><td class="mini">'+(u.locais&&u.locais.length?u.locais.map(localNome).map(esc).join(', '):'todos')+'</td>'+(isAdmin()?'<td>'+(u.email.toLowerCase()!==S.perfil.email.toLowerCase()?'<button class="btn sec sm" onclick="A.removerUsuario(\''+u.id+'\')">Remover</button>':'')+'</td>':'')+'</tr>'}).join('')+'</table></div>'});
 }
 
 // ---------- acoes ----------
@@ -425,6 +514,19 @@ window.A={
   evStatus:async function(id,st){try{var p={status:st};if(st==='reconhecido'){p.reconhecido_em=new Date().toISOString();p.reconhecido_por=S.perfil.email}else p.fechado_em=new Date().toISOString();
     var r=await sb.from('eventos').update(p).eq('id',id);if(r.error)throw r.error;await refresh()}catch(e){fail(e)}},
   evFiltro:function(f){S.evFiltro=f;renderEventos()},
+  agendaNova:function(){S.agendaEdit={ativa:true,dias:[1,2,3,4,5,6],hora_ligar:'08:00',hora_desligar:'18:00',reenviar_min:30,excecoes:[],local_id:null,dispositivo_id:null,codigo:null};renderAgendas();window.scrollTo(0,0)},
+  agendaEditar:function(id){S.agendaEdit=JSON.parse(JSON.stringify(S.agendas.filter(function(a){return a.id===id})[0]));renderAgendas();window.scrollTo(0,0)},
+  agendaCancelar:function(){S.agendaEdit=null;renderAgendas()},
+  agendaCampo:function(k,v){agendaLerForm();var a=S.agendaEdit;a[k]=v||null;if(k==='local_id'){a.dispositivo_id=null;a.codigo=null}if(k==='dispositivo_id')a.codigo=null;if(k==='codigo'){a.valor_ligar=null;a.valor_desligar=null}if(k==='setpoint_codigo')a.setpoint_valor=null;renderAgendas()},
+  agendaSalvar:async function(){try{agendaLerForm();var a=S.agendaEdit;
+    if(!a.nome)throw new Error('De um nome a agenda.');if(!a.codigo)throw new Error('Escolha o comando.');if(!a.dias.length)throw new Error('Marque ao menos um dia.');
+    if(a.valor_ligar==null||a.valor_desligar==null)throw new Error('Informe os valores ao ligar e ao desligar.');if(!a.hora_ligar||!a.hora_desligar)throw new Error('Informe os horarios.');
+    var p={cliente_id:S.perfil.cliente_id,nome:a.nome,ativa:a.ativa!==false,local_id:a.local_id||null,dispositivo_id:a.dispositivo_id||null,codigo:a.codigo,valor_ligar:a.valor_ligar,valor_desligar:a.valor_desligar,
+      dias:a.dias,hora_ligar:a.hora_ligar,hora_desligar:a.hora_desligar,excecoes:a.excecoes,setpoint_codigo:a.setpoint_codigo||null,setpoint_valor:a.setpoint_codigo?a.setpoint_valor:null,reenviar_min:a.reenviar_min};
+    var q=a.id?sb.from('agendas').update(p).eq('id',a.id):sb.from('agendas').insert(p);var x=await q;if(x.error)throw x.error;
+    S.agendaEdit=null;toast('Agenda salva');await refresh()}catch(e){fail(e)}},
+  agendaAtiva:async function(id,on){try{var r=await sb.from('agendas').update({ativa:on}).eq('id',id);if(r.error)throw r.error;await refresh()}catch(e){fail(e)}},
+  agendaExcluir:async function(id){if(!confirm('Excluir esta agenda?'))return;try{var r=await sb.from('agendas').delete().eq('id',id);if(r.error)throw r.error;await refresh()}catch(e){fail(e)}},
   regraNova:function(){S.regraEdit={ativa:true,operador:'>',histerese:0,duracao_min:0,intervalo_min:60,severidade:'aviso',acao_tipo:'alerta'};renderRegras();window.scrollTo(0,0)},
   regraEditar:function(id){S.regraEdit=JSON.parse(JSON.stringify(S.regras.filter(function(r){return r.id===id})[0]));renderRegras();window.scrollTo(0,0)},
   regraCancelar:function(){S.regraEdit=null;renderRegras()},
@@ -442,7 +544,9 @@ window.A={
   regraAtiva:async function(id,on){try{var r=await sb.from('regras').update({ativa:on,estado:'normal',condicao_desde:null}).eq('id',id);if(r.error)throw r.error;await refresh()}catch(e){fail(e)}},
   regraExcluir:async function(id){if(!confirm('Excluir esta regra?'))return;try{var r=await sb.from('regras').delete().eq('id',id);if(r.error)throw r.error;await refresh()}catch(e){fail(e)}},
   novoLocal:async function(){try{var n=val('nl-nome');if(!n)return;var r=await sb.from('locais').insert({cliente_id:S.perfil.cliente_id,nome:n});if(r.error)throw r.error;await refresh()}catch(e){fail(e)}},
-  novoUsuario:async function(){try{var em=val('nu-email');if(!em)throw new Error('Informe o e-mail.');var r=await sb.from('usuarios').insert({cliente_id:S.perfil.cliente_id,email:em.toLowerCase(),nome:val('nu-nome'),papel:el('nu-papel').value});if(r.error)throw r.error;toast('Usuario autorizado');renderConfig()}catch(e){fail(e)}},
+  novoUsuario:async function(){try{var em=val('nu-email');if(!em)throw new Error('Informe o e-mail.');
+    var locs=Array.prototype.slice.call(document.querySelectorAll('.nu-local:checked')).map(function(c){return c.value});
+    var r=await sb.from('usuarios').insert({cliente_id:S.perfil.cliente_id,email:em.toLowerCase(),nome:val('nu-nome'),papel:el('nu-papel').value,locais:locs.length?locs:null});if(r.error)throw r.error;toast('Usuario autorizado');renderConfig()}catch(e){fail(e)}},
   removerUsuario:async function(id){if(!confirm('Remover o acesso deste usuario?'))return;try{var r=await sb.from('usuarios').delete().eq('id',id);if(r.error)throw r.error;renderConfig()}catch(e){fail(e)}}
 };
 async function enviarCmd(code,v){try{toast('Enviando comando…');var r=await sb.rpc('comandar_ui',{p_dispositivo_id:S.dispId,p_codigo:code,p_valor:v});if(r.error)throw r.error;
@@ -458,7 +562,7 @@ async function onSession(session){
     if(!S.perfis.length){el('app').innerHTML='<div class="login"><h2>Acesso nao autorizado</h2><p>O e-mail <b>'+esc(session.user.email)+'</b> nao esta autorizado em nenhuma empresa. Peca ao administrador para incluir seu e-mail.</p><button class="btn sec" onclick="A.sair()">Sair</button></div>';return}
     S.perfil=S.perfis[0];
     await loadBase();render();
-    S.timer=setInterval(function(){if(!S.regraEdit)refresh()},60000);
+    S.timer=setInterval(function(){if(!S.regraEdit&&!S.agendaEdit)refresh()},60000);
   }catch(e){fail(e);el('app').innerHTML='<div class="login"><h2>Falha ao carregar</h2><p>'+esc(e.message)+'</p><button class="btn sec" onclick="location.reload()">Tentar de novo</button> <button class="btn sec" onclick="A.sair()">Sair</button></div>'}
 }
 sb.auth.onAuthStateChange(function(ev,session){if(ev==='INITIAL_SESSION'||ev==='SIGNED_IN'||ev==='SIGNED_OUT')onSession(session)});
