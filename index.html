@@ -113,8 +113,9 @@ var SB_URL='https://puepmnyffpfjttxmwfjt.supabase.co';
 var SB_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB1ZXBtbnlmZnBmanR0eG13Zmp0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk2NTMzMzksImV4cCI6MjEwNTIyOTMzOX0.6waSiEVZE0Fm2QraExivstM8qjzK7NGQ6698wmzHxjw';
 var sb=window.supabase.createClient(SB_URL,SB_KEY,{db:{schema:'iot'}});
 
-var S={perfis:[],perfil:null,view:'geral',dispId:null,disp:[],grand:{},locais:[],tipos:[],fontes:[],eventos:[],regras:[],agendas:[],
-       evFiltro:'abertos',chartCode:null,chartPer:24,chart:null,regraEdit:null,agendaEdit:null,timer:null};
+var S={perfis:[],perfil:null,view:'geral',dispId:null,disp:[],grand:{},locais:[],tipos:[],fontes:[],eventos:[],regras:[],agendas:[],zonas:[],zonaDisp:{},
+       evFiltro:'abertos',chartCode:null,chartPer:24,chart:null,regraEdit:null,agendaEdit:null,zonaEdit:null,timer:null};
+var IR_MODO={0:'Frio',1:'Calor',2:'Automatico',3:'Ventilar',4:'Desumidificar'},IR_VENTO={0:'Automatica',1:'Baixa',2:'Media',3:'Alta'};
 var DIAS=['Dom','Seg','Ter','Qua','Qui','Sex','Sab'];
 
 // ---------- utilitarios ----------
@@ -153,18 +154,24 @@ async function loadBase(){
     sb.from('regras').select('*').eq('cliente_id',cid).order('nome'),
     sb.from('v_fontes').select('*').eq('cliente_id',cid),
     sb.from('tipos_dispositivo').select('*').order('nome'),
-    sb.from('agendas').select('*').eq('cliente_id',cid).order('nome')
+    sb.from('agendas').select('*').eq('cliente_id',cid).order('nome'),
+    sb.from('zonas').select('*').eq('cliente_id',cid).order('ordem').order('nome'),
+    sb.from('zona_dispositivos').select('*')
   ]);
   for(var i=0;i<r.length;i++)if(r[i].error)throw r[i].error;
   S.disp=r[0].data;S.grand={};
   r[1].data.forEach(function(g){(S.grand[g.dispositivo_id]=S.grand[g.dispositivo_id]||[]).push(g)});
   S.locais=r[2].data;S.eventos=r[3].data;S.regras=r[4].data;S.fontes=r[5].data;S.tipos=r[6].data;S.agendas=r[7].data;
+  S.zonas=r[8].data;S.zonaDisp={};r[9].data.forEach(function(z){(S.zonaDisp[z.zona_id]=S.zonaDisp[z.zona_id]||[]).push(z.dispositivo_id)});
 }
 function localNome(id){for(var i=0;i<S.locais.length;i++)if(S.locais[i].id===id)return S.locais[i].nome;return id?'?':'Todos os locais'}
-// grandezas comandaveis disponiveis num escopo (local e/ou dispositivo), uma por codigo
-function codigosComandaveis(localId,dispId){
-  var m={};S.disp.forEach(function(d){if(dispId&&d.id!==dispId)return;if(!dispId&&localId&&d.local_id!==localId)return;
-    (S.grand[d.id]||[]).forEach(function(g){if(g.comandavel&&!m[g.codigo])m[g.codigo]=g})});
+function zonaById(id){for(var i=0;i<S.zonas.length;i++)if(S.zonas[i].id===id)return S.zonas[i];return null}
+function zonaNome(id){var z=zonaById(id);return z?z.nome:'?'}
+function zonasDoDisp(dId){return S.zonas.filter(function(z){return (S.zonaDisp[z.id]||[]).indexOf(dId)>-1})}
+// grandezas comandaveis disponiveis num escopo (local, zona e/ou dispositivo), uma por codigo; bloqueadas nunca entram
+function codigosComandaveis(localId,dispId,zonaId){
+  var m={};S.disp.forEach(function(d){if(dispId&&d.id!==dispId)return;if(!dispId&&zonaId&&(S.zonaDisp[zonaId]||[]).indexOf(d.id)<0)return;if(!dispId&&!zonaId&&localId&&d.local_id!==localId)return;
+    (S.grand[d.id]||[]).forEach(function(g){if(g.comandavel&&!g.bloqueada&&!m[g.codigo])m[g.codigo]=g})});
   return Object.keys(m).sort().map(function(k){return m[k]});
 }
 function valInputHtml(id,cur,gg){
@@ -272,10 +279,17 @@ function renderDisp(){
   if(!S.chartCode||!numer.some(function(g){return g.codigo===S.chartCode}))S.chartCode=numer.length?numer[0].codigo:null;
   var evs=S.eventos.filter(function(e){return e.dispositivo_id===d.id&&e.status!=='fechado'});
   var h='<button class="back" onclick="A.go(\'geral\')">&larr; Dispositivos</button>';
-  h+='<div class="panel"><div class="row" style="justify-content:space-between"><div><h1>'+esc(d.nome)+'</h1><div class="mini">'+esc(d.tipos_dispositivo?d.tipos_dispositivo.nome:d.categoria)+' · '+esc(d.produto||'')+' · '+(d.alimentacao==='rede'?'alimentado pela rede':'a bateria')+'</div></div>'+
+  var zs=zonasDoDisp(d.id),pr=d.parametros||{},isIR=d.categoria==='infrared_ac';
+  h+='<div class="panel"><div class="row" style="justify-content:space-between"><div><h1>'+esc(d.nome)+'</h1><div class="mini">'+esc(d.tipos_dispositivo?d.tipos_dispositivo.nome:d.categoria)+' · '+esc(d.produto||'')+' · '+(d.alimentacao==='rede'?'alimentado pela rede':'a bateria')+
+    (d.pai_id?' · hub <b>'+esc(dispNome(d.pai_id))+'</b>':'')+(zs.length?' · zona '+zs.map(function(z){return '<b>'+esc(z.nome)+'</b>'}).join(', '):'')+'</div></div>'+
     '<div class="row">'+statusChip(d)+batChip(d)+'<span class="mini">leitura '+ago(d.ultima_leitura_em)+'</span></div></div>';
   if(isAdmin()){h+='<div class="row" style="margin-top:12px"><div class="fld" style="max-width:260px"><label>Nome</label><input id="d-nome" value="'+esc(d.nome)+'"></div><div class="fld" style="max-width:220px"><label>Local</label><select id="d-local"><option value="">–</option>'+S.locais.map(function(l){return '<option value="'+l.id+'"'+(l.id===d.local_id?' selected':'')+'>'+esc(l.nome)+'</option>'}).join('')+'</select></div>'+
-    '<div class="fld" style="max-width:120px"><label>Ativo</label><select id="d-ativo"><option value="true"'+(d.ativo?' selected':'')+'>Sim</option><option value="false"'+(!d.ativo?' selected':'')+'>Nao</option></select></div><button class="btn sm" style="align-self:flex-end" onclick="A.salvarDisp()">Salvar</button></div>'}
+    '<div class="fld" style="max-width:120px"><label>Ativo</label><select id="d-ativo"><option value="true"'+(d.ativo?' selected':'')+'>Sim</option><option value="false"'+(!d.ativo?' selected':'')+'>Nao</option></select></div>'+
+    (isIR?'<div class="fld" style="max-width:170px"><label>Modo ao ligar</label><select id="d-pmode">'+Object.keys(IR_MODO).map(function(k){return '<option value="'+k+'"'+(String(pr.mode==null?0:pr.mode)===k?' selected':'')+'>'+IR_MODO[k]+'</option>'}).join('')+'</select></div>'+
+      '<div class="fld" style="max-width:150px"><label>Ventilacao ao ligar</label><select id="d-pwind">'+Object.keys(IR_VENTO).map(function(k){return '<option value="'+k+'"'+(String(pr.wind==null?0:pr.wind)===k?' selected':'')+'>'+IR_VENTO[k]+'</option>'}).join('')+'</select></div>'+
+      '<div class="fld" style="max-width:130px"><label>Temp. ao ligar (°C)</label><input id="d-ptemp" type="number" min="16" max="30" value="'+(pr.temp==null?24:pr.temp)+'"></div>':'')+
+    '<button class="btn sm" style="align-self:flex-end" onclick="A.salvarDisp()">Salvar</button></div>'+
+    (isIR?'<p class="mini" style="margin:6px 0 0">Controle por infravermelho: o estado mostrado e o ultimo comando enviado, nao uma leitura do aparelho. Ao ligar, a plataforma envia modo, ventilacao e temperatura acima.</p>':'')}
   h+='</div>';
   if(evs.length){h+='<div class="panel"><h2>Eventos abertos</h2>'+evs.map(evHtml).join('')+'</div>'}
   h+='<div class="panel"><h2>Estado atual</h2><div class="vals">'+gs.filter(function(g){return g.papel==='leitura'||g.papel==='estado'}).map(function(g){var v=d.estado_atual?d.estado_atual[g.codigo]:null;
@@ -286,7 +300,7 @@ function renderDisp(){
       '<div class="seg">'+[[24,'24 h'],[168,'7 d'],[720,'30 d']].map(function(p){return '<button class="'+(S.chartPer===p[0]?'on':'')+'" onclick="A.chartPer('+p[0]+')">'+p[1]+'</button>'}).join('')+'</div></div></div>'+
       '<div class="chartwrap" style="margin-top:12px"><canvas id="chart"></canvas></div><div id="chart-info" class="mini" style="margin-top:6px"></div></div>';
   }
-  var cmds=gs.filter(function(g){return g.comandavel});
+  var cmds=gs.filter(function(g){return g.comandavel&&!g.bloqueada});
   if(cmds.length&&isAdmin()){
     h+='<div class="panel"><h2>Comandos e configuracoes do dispositivo</h2><p class="mini" style="margin:-6px 0 12px">Enviados pela nuvem do fabricante. Limites e sensibilidade sao avaliados pelo proprio dispositivo, mesmo com esta plataforma fora do ar.</p><div class="frm">';
     cmds.forEach(function(g){
@@ -304,7 +318,7 @@ function renderDisp(){
   if(isAdmin()&&gs.length){
     h+='<div class="panel"><h2>Grandezas deste dispositivo</h2><p class="mini" style="margin:-6px 0 10px">O que a plataforma le do aparelho. <b>Leitura</b> aparece no card; <b>Gravar</b> guarda o historico para graficos e regras; <b>Config</b> e parametro do aparelho.</p><div class="tblwrap"><table><tr><th>Nome</th><th>Codigo</th><th>Tipo</th><th>Papel</th><th>Gravar</th><th></th></tr>'+
       gs.map(function(g){return '<tr><td><input id="g-nome-'+g.id+'" value="'+esc(g.nome)+'" style="padding:5px 8px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--ink);font-size:13px;min-width:140px"></td>'+
-        '<td class="mini">'+esc(g.codigo)+(g.comandavel?' <span class="chip brand">comandavel</span>':'')+'</td><td class="mini">'+esc(g.tipo_valor||'')+(g.unidade?' '+esc(unidade(g.unidade)):'')+'</td>'+
+        '<td class="mini">'+esc(g.codigo)+(g.bloqueada?' <span class="chip crit">bloqueada</span>':g.comandavel?' <span class="chip brand">comandavel</span>':'')+'</td><td class="mini">'+esc(g.tipo_valor||'')+(g.unidade?' '+esc(unidade(g.unidade)):'')+'</td>'+
         '<td><select id="g-papel-'+g.id+'" style="padding:5px;border-radius:7px;border:1px solid var(--line);background:var(--bg);color:var(--ink);font-size:13px">'+['leitura','estado','config'].map(function(p){return '<option value="'+p+'"'+(p===g.papel?' selected':'')+'>'+p+'</option>'}).join('')+'</select></td>'+
         '<td><button class="tog '+(g.gravar?'on':'')+'" id="g-grav-'+g.id+'" onclick="this.classList.toggle(\'on\')"></button></td>'+
         '<td><button class="btn sec sm" onclick="A.grandezaSalvar(\''+g.id+'\')">Salvar</button></td></tr>'}).join('')+'</table></div></div>';
@@ -418,9 +432,10 @@ function lerValor(id,gg){
 
 // ---------- agendas ----------
 function agendaDesc(a){
-  var gg=codigosComandaveis(a.local_id,a.dispositivo_id).filter(function(g){return g.codigo===a.codigo})[0];
-  var esc1=a.dispositivo_id?esc(dispNome(a.dispositivo_id)):esc(localNome(a.local_id));
+  var gg=codigosComandaveis(a.local_id,a.dispositivo_id,a.zona_id).filter(function(g){return g.codigo===a.codigo})[0];
+  var esc1=a.dispositivo_id?esc(dispNome(a.dispositivo_id)):a.zona_id?'zona '+esc(zonaNome(a.zona_id)):esc(localNome(a.local_id));
   return esc1+' · '+esc(gg?gg.nome:a.codigo)+' · '+a.dias.slice().sort().map(function(d){return DIAS[d]}).join(', ')+' · '+a.hora_ligar.slice(0,5)+' a '+a.hora_desligar.slice(0,5)+
+    (a.escalonar_min&&!a.dispositivo_id?' · partida escalonada '+a.escalonar_min+' min por zona':'')+
     (a.setpoint_codigo?' · mantem '+esc(a.setpoint_codigo)+' = '+esc(JSON.stringify(a.setpoint_valor)):'')+(a.excecoes.length?' · '+a.excecoes.length+' excecao(oes)':'');
 }
 function renderAgendas(){
@@ -437,16 +452,19 @@ function renderAgendas(){
 }
 function agendaForm(){
   var a=S.agendaEdit;
-  var cods=codigosComandaveis(a.local_id,a.dispositivo_id);
+  var cods=codigosComandaveis(a.local_id,a.dispositivo_id,a.zona_id);
   if(!a.codigo&&cods.length)a.codigo=cods[0].codigo;
   var g=cods.filter(function(x){return x.codigo===a.codigo})[0];
   var sg=a.setpoint_codigo?cods.filter(function(x){return x.codigo===a.setpoint_codigo})[0]:null;
-  var dispsEscopo=S.disp.filter(function(d){return !a.local_id||d.local_id===a.local_id});
+  var dispsEscopo=S.disp.filter(function(d){return a.zona_id?(S.zonaDisp[a.zona_id]||[]).indexOf(d.id)>-1:(!a.local_id||d.local_id===a.local_id)});
+  var zonasEscopo=S.zonas.filter(function(z){return !a.local_id||z.local_id===a.local_id});
   function fmtData(s){var p=s.split('-');return p[2]+'/'+p[1]+'/'+p[0]}
   return '<div class="panel" style="border-color:var(--brand)"><h2>'+(a.id?'Editar agenda':'Nova agenda')+'</h2><div class="frm">'+
     '<div class="fld" style="grid-column:1/-1"><label>Nome</label><input id="a-nome" value="'+esc(a.nome||'')+'" placeholder="Ex.: Horario de funcionamento das lojas"></div>'+
     '<div class="fld"><label>Local</label><select id="a-local" onchange="A.agendaCampo(\'local_id\',this.value)"><option value="">Todos os locais</option>'+S.locais.map(function(l){return '<option value="'+l.id+'"'+(l.id===a.local_id?' selected':'')+'>'+esc(l.nome)+'</option>'}).join('')+'</select></div>'+
+    '<div class="fld"><label>Zona</label><select id="a-zona" onchange="A.agendaCampo(\'zona_id\',this.value)"><option value="">Todas as zonas do escopo</option>'+zonasEscopo.map(function(z){return '<option value="'+z.id+'"'+(z.id===a.zona_id?' selected':'')+'>'+esc(z.nome)+(a.local_id?'':' ('+esc(localNome(z.local_id))+')')+'</option>'}).join('')+'</select></div>'+
     '<div class="fld"><label>Dispositivo</label><select id="a-disp" onchange="A.agendaCampo(\'dispositivo_id\',this.value)"><option value="">Todos do escopo</option>'+dispsEscopo.map(function(d){return '<option value="'+d.id+'"'+(d.id===a.dispositivo_id?' selected':'')+'>'+esc(d.nome)+'</option>'}).join('')+'</select></div>'+
+    (a.dispositivo_id?'':'<div class="fld"><label>Partida escalonada entre zonas (min)</label><input id="a-esc" type="number" min="0" value="'+(a.escalonar_min||0)+'"><span class="mini">zona 2 liga N min depois, zona 3 2N…</span></div>')+
     '<div class="fld"><label>Comando</label><select id="a-cod" onchange="A.agendaCampo(\'codigo\',this.value)">'+(cods.length?cods.map(function(x){return '<option value="'+x.codigo+'"'+(x.codigo===a.codigo?' selected':'')+'>'+esc(x.nome)+' ('+esc(x.codigo)+')</option>'}).join(''):'<option value="">nenhum dispositivo comandavel no escopo</option>')+'</select></div>'+
     '<div class="fld"><label>Valor ao ligar</label>'+valInputHtml('a-vl',a.valor_ligar==null?(g&&g.tipo_valor==='Boolean'?true:null):a.valor_ligar,g)+'</div>'+
     '<div class="fld"><label>Valor ao desligar</label>'+valInputHtml('a-vd',a.valor_desligar==null?(g&&g.tipo_valor==='Boolean'?false:null):a.valor_desligar,g)+'</div>'+
@@ -461,11 +479,51 @@ function agendaForm(){
 }
 function agendaLerForm(){
   var a=S.agendaEdit;a.nome=val('a-nome');a.hora_ligar=val('a-hl');a.hora_desligar=val('a-hd');a.reenviar_min=Number(val('a-re'))||30;
+  a.escalonar_min=el('a-esc')?Math.max(0,Number(val('a-esc'))||0):0;
   a.dias=DIAS.map(function(_,i){return el('a-dia-'+i)&&el('a-dia-'+i).checked?i:-1}).filter(function(i){return i>=0});
   a.excecoes=val('a-exc').split(',').map(function(s){s=s.trim();var m=s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);return m?m[3]+'-'+m[2]+'-'+m[1]:null}).filter(Boolean);
-  var cods=codigosComandaveis(a.local_id,a.dispositivo_id);var g=cods.filter(function(x){return x.codigo===a.codigo})[0];
+  var cods=codigosComandaveis(a.local_id,a.dispositivo_id,a.zona_id);var g=cods.filter(function(x){return x.codigo===a.codigo})[0];
   a.valor_ligar=lerValor('a-vl',g);a.valor_desligar=lerValor('a-vd',g);
   if(a.setpoint_codigo){var sg=cods.filter(function(x){return x.codigo===a.setpoint_codigo})[0];a.setpoint_valor=lerValor('a-sv',sg)}else a.setpoint_valor=null;
+}
+
+// ---------- zonas ----------
+function zonasPanel(){
+  var h='<div class="panel"><div class="row" style="justify-content:space-between"><div><h2 style="margin:0">Zonas</h2><div class="mini">Grupo de dispositivos de um local (ex.: os ARs da frente da loja) com um sensor de referencia. Agendas podem ter uma zona como alvo e partida escalonada pela ordem.</div></div>'+(isAdmin()&&S.locais.length?'<button class="btn sm" onclick="A.zonaNova()">+ Nova zona</button>':'')+'</div>';
+  if(S.zonaEdit)h+=zonaForm();
+  if(!S.zonas.length)h+='<p class="mini" style="margin-top:10px">Nenhuma zona.</p>';
+  else h+='<div class="tblwrap" style="margin-top:10px"><table><tr><th>Ordem</th><th>Zona</th><th>Local</th><th>Sensor</th><th>Dispositivos</th><th>Modo</th>'+(isAdmin()?'<th></th>':'')+'</tr>'+
+    S.zonas.map(function(z){var ds=(S.zonaDisp[z.id]||[]);var sv=z.sensor_dispositivo_id?dispById(z.sensor_dispositivo_id):null;var tv=sv&&sv.estado_atual?sv.estado_atual[z.sensor_codigo]:null;
+      return '<tr><td>'+z.ordem+'</td><td><b>'+esc(z.nome)+'</b></td><td>'+esc(localNome(z.local_id))+'</td><td class="mini">'+(sv?esc(sv.nome)+(typeof tv==='number'?' · <b>'+fmtN(tv)+'</b>':''):'–')+'</td>'+
+        '<td class="mini">'+(ds.length?ds.map(dispNome).map(esc).join(', '):'nenhum')+'</td><td>'+(z.modo==='temperatura'?'<span class="chip brand">temperatura</span>':'<span class="chip muted">agenda</span>')+'</td>'+
+        (isAdmin()?'<td><button class="btn sec sm" onclick="A.zonaEditar(\''+z.id+'\')">Editar</button> <button class="btn sec sm" onclick="A.zonaExcluir(\''+z.id+'\')">Excluir</button></td>':'')+'</tr>'}).join('')+'</table></div>';
+  return h+'</div>';
+}
+function zonaForm(){
+  var z=S.zonaEdit;if(!z.local_id&&S.locais.length)z.local_id=S.locais[0].id;
+  var ds=S.disp.filter(function(d){return d.local_id===z.local_id});
+  var sens=ds.filter(function(d){return (S.grand[d.id]||[]).some(function(g){return g.papel==='leitura'&&g.tipo_valor==='Integer'})});
+  var sel=z.dispositivos||(S.zonaDisp[z.id]||[]);
+  var num=function(id,l,v,step){return '<div class="fld"><label>'+l+'</label><input id="'+id+'" type="number" step="'+(step||'any')+'" value="'+(v==null?'':v)+'"></div>'};
+  return '<div class="panel" style="border-color:var(--brand);margin-top:10px"><h3>'+(z.id?'Editar zona':'Nova zona')+'</h3><div class="frm">'+
+    '<div class="fld"><label>Nome</label><input id="z-nome" value="'+esc(z.nome||'')+'" placeholder="Ex.: Salao - Frente"></div>'+
+    '<div class="fld"><label>Local</label><select id="z-local" onchange="A.zonaCampo(\'local_id\',this.value)">'+S.locais.map(function(l){return '<option value="'+l.id+'"'+(l.id===z.local_id?' selected':'')+'>'+esc(l.nome)+'</option>'}).join('')+'</select></div>'+
+    num('z-ordem','Ordem (partida escalonada)',z.ordem==null?1:z.ordem,1)+
+    '<div class="fld"><label>Sensor de referencia</label><select id="z-sens"><option value="">nenhum</option>'+sens.map(function(d){return '<option value="'+d.id+'"'+(d.id===z.sensor_dispositivo_id?' selected':'')+'>'+esc(d.nome)+'</option>'}).join('')+'</select></div>'+
+    '<div class="fld"><label>Grandeza do sensor</label><input id="z-scod" value="'+esc(z.sensor_codigo||'va_temperature')+'"></div>'+
+    '<div class="fld"><label>Modo</label><select id="z-modo"><option value="agenda"'+(z.modo!=='temperatura'?' selected':'')+'>Agenda (liga/desliga por horario)</option><option value="temperatura"'+(z.modo==='temperatura'?' selected':'')+'>Temperatura (dentro do horario, controla pelo sensor)</option></select></div>'+
+    num('z-tdes','Desliga a zona abaixo de (°C)',z.temp_desligar==null?23:z.temp_desligar)+num('z-trel','Religa acima de (°C)',z.temp_religar==null?25.5:z.temp_religar)+
+    num('z-pers','Leituras consecutivas',z.leituras_persistencia==null?2:z.leituras_persistencia,1)+num('z-minon','Minimo ligado (min)',z.min_ligado_min==null?20:z.min_ligado_min,1)+
+    num('z-minoff','Minimo desligado (min)',z.min_desligado_min==null?15:z.min_desligado_min,1)+num('z-emerg','Emergencia: tudo liga acima de (°C)',z.temp_emergencia==null?27:z.temp_emergencia)+
+    num('z-tol','Sensor sem leitura ha mais de (min) = volta a agenda',z.sensor_tolerancia_min==null?30:z.sensor_tolerancia_min,1)+
+    '<div class="fld" style="grid-column:1/-1"><label>Dispositivos da zona (atuadores)</label><div class="row">'+(ds.length?ds.map(function(d){return '<label style="display:flex;gap:4px;align-items:center;font-size:14px"><input type="checkbox" class="z-disp" value="'+d.id+'"'+(sel.indexOf(d.id)>-1?' checked':'')+'>'+esc(d.nome)+'</label>'}).join(''):'<span class="mini">nenhum dispositivo neste local ainda; sincronize e atribua o local aos aparelhos</span>')+'</div></div>'+
+    '</div><div class="row" style="margin-top:12px"><button class="btn" onclick="A.zonaSalvar()">Salvar</button><button class="btn sec" onclick="A.zonaCancelar()">Cancelar</button></div></div>';
+}
+function zonaLerForm(){
+  var z=S.zonaEdit;z.nome=val('z-nome');z.local_id=val('z-local')||z.local_id;z.ordem=Number(val('z-ordem'))||1;z.sensor_dispositivo_id=val('z-sens')||null;z.sensor_codigo=val('z-scod')||'va_temperature';
+  z.modo=el('z-modo').value;z.temp_desligar=Number(val('z-tdes'));z.temp_religar=Number(val('z-trel'));z.leituras_persistencia=Number(val('z-pers'))||1;z.min_ligado_min=Number(val('z-minon'))||0;
+  z.min_desligado_min=Number(val('z-minoff'))||0;z.temp_emergencia=Number(val('z-emerg'));z.sensor_tolerancia_min=Number(val('z-tol'))||30;
+  z.dispositivos=Array.prototype.slice.call(document.querySelectorAll('.z-disp:checked')).map(function(c){return c.value});
 }
 
 function renderConfig(){
@@ -475,12 +533,13 @@ function renderConfig(){
     (isAdmin()?'<div class="row" style="margin-top:12px"><button class="btn sec" id="btn-sync" onclick="A.sincronizar()">&#8635; Sincronizar dispositivos</button><span class="mini">Use depois de parear um aparelho novo no app do fabricante.</span></div>':'')+'</div>';
   h+='<div class="panel"><h2>Locais</h2>'+(S.locais.length?'<div class="row">'+S.locais.map(function(l){return '<span class="chip brand">'+esc(l.nome)+'</span>'}).join('')+'</div>':'<p class="mini">Nenhum local.</p>')+
     (isAdmin()?'<div class="row" style="margin-top:10px"><div class="fld" style="max-width:260px"><label>Novo local</label><input id="nl-nome" placeholder="Ex.: Galpao 2"></div><button class="btn sm" style="align-self:flex-end" onclick="A.novoLocal()">Adicionar</button></div>':'')+'</div>';
+  h+=zonasPanel();
   h+='<div class="panel"><h2>Usuarios</h2><div id="usr"><div class="empty">Carregando…</div></div>'+
     (isAdmin()?'<div class="row" style="margin-top:10px"><div class="fld"><label>Nome</label><input id="nu-nome"></div><div class="fld"><label>E-mail</label><input id="nu-email" type="email"></div><div class="fld" style="max-width:140px"><label>Papel</label><select id="nu-papel"><option value="operacao">Operacao</option><option value="admin">Admin</option></select></div><button class="btn sm" style="align-self:flex-end" onclick="A.novoUsuario()">Autorizar</button></div>'+
       (S.locais.length>1?'<div class="fld" style="margin-top:8px"><label>Acesso a locais (nenhum marcado = todos)</label><div class="row">'+S.locais.map(function(l){return '<label style="display:flex;gap:4px;align-items:center;font-size:14px"><input type="checkbox" class="nu-local" value="'+l.id+'">'+esc(l.nome)+'</label>'}).join('')+'</div></div>':'')+
       '<p class="mini">O usuario autorizado cria a senha na tela de login em "Primeiro acesso".</p>':'')+'</div>';
   h+='<div class="panel"><h2>Catalogo de tipos</h2><div class="tblwrap"><table><tr><th>Tipo</th><th>Alimentacao</th><th>Observacao</th></tr>'+S.tipos.map(function(t){return '<tr><td><b>'+esc(t.nome)+'</b> <span class="mini">'+esc(t.codigo)+'</span></td><td>'+esc(t.alimentacao)+'</td><td class="mini">'+esc(t.descricao||'')+'</td></tr>'}).join('')+'</table></div></div>';
-  h+='<p class="mini">Insiel IoT · v1 · coleta a cada 5 min pela nuvem do fabricante · dados no Supabase (regiao Sao Paulo).</p>';
+  h+='<p class="mini">Insiel IoT · v1.1 (zonas e agenda por zona) · coleta a cada 5 min pela nuvem do fabricante · dados no Supabase (regiao Sao Paulo).</p>';
   el('main').innerHTML=h;
   sb.from('usuarios').select('*').eq('cliente_id',S.perfil.cliente_id).order('nome').then(function(r){var b=el('usr');if(!b)return;if(r.error){b.innerHTML=esc(r.error.message);return}
     b.innerHTML='<div class="tblwrap"><table><tr><th>Nome</th><th>E-mail</th><th>Papel</th><th>Locais</th>'+(isAdmin()?'<th></th>':'')+'</tr>'+r.data.map(function(u){return '<tr><td>'+esc(u.nome||'')+'</td><td>'+esc(u.email)+'</td><td>'+(u.papel==='admin'?'<span class="chip brand">Admin</span>':'<span class="chip info">Operacao</span>')+'</td><td class="mini">'+(u.locais&&u.locais.length?u.locais.map(localNome).map(esc).join(', '):'todos')+'</td>'+(isAdmin()?'<td>'+(u.email.toLowerCase()!==S.perfil.email.toLowerCase()?'<button class="btn sec sm" onclick="A.removerUsuario(\''+u.id+'\')">Remover</button>':'')+'</td>':'')+'</tr>'}).join('')+'</table></div>'});
@@ -505,7 +564,9 @@ window.A={
   coletarAgora:async function(){var b=el('btn-col');try{if(b){b.disabled=true;b.textContent='Coletando…'}var r=await sb.rpc('coletar_agora');if(r.error)throw r.error;
     var x=r.data&&r.data[0];toast(x&&x.erro?'Falha: '+x.erro:'Coleta feita: '+(x?x.leituras_gravadas:0)+' leituras novas');await refresh()}catch(e){fail(e);if(b){b.disabled=false;b.textContent='Atualizar agora'}}},
   sincronizar:async function(){var b=el('btn-sync');try{b.disabled=true;b.textContent='Sincronizando…';var r=await sb.rpc('sincronizar_agora');if(r.error)throw r.error;toast(r.data+' dispositivo(s) sincronizado(s)');await refresh()}catch(e){fail(e);b.disabled=false;b.textContent='Sincronizar dispositivos'}},
-  salvarDisp:async function(){try{var r=await sb.from('dispositivos').update({nome:val('d-nome'),local_id:val('d-local')||null,ativo:val('d-ativo')==='true'}).eq('id',S.dispId);if(r.error)throw r.error;toast('Salvo');await refresh()}catch(e){fail(e)}},
+  salvarDisp:async function(){try{var p={nome:val('d-nome'),local_id:val('d-local')||null,ativo:val('d-ativo')==='true'};
+    if(el('d-pmode')){var d=dispById(S.dispId);var pr=Object.assign({},d.parametros||{});pr.mode=Number(val('d-pmode'));pr.wind=Number(val('d-pwind'));var t=Number(val('d-ptemp'));if(t>=16&&t<=30)pr.temp=t;p.parametros=pr}
+    var r=await sb.from('dispositivos').update(p).eq('id',S.dispId);if(r.error)throw r.error;toast('Salvo');await refresh()}catch(e){fail(e)}},
   grandezaSalvar:async function(id){try{var p={nome:val('g-nome-'+id)||undefined,papel:el('g-papel-'+id).value,gravar:el('g-grav-'+id).classList.contains('on')};
     var r=await sb.from('grandezas').update(p).eq('id',id);if(r.error)throw r.error;toast('Grandeza salva');await refresh()}catch(e){fail(e)}},
   cmd:async function(code,v){await enviarCmd(code,v)},
@@ -514,15 +575,15 @@ window.A={
   evStatus:async function(id,st){try{var p={status:st};if(st==='reconhecido'){p.reconhecido_em=new Date().toISOString();p.reconhecido_por=S.perfil.email}else p.fechado_em=new Date().toISOString();
     var r=await sb.from('eventos').update(p).eq('id',id);if(r.error)throw r.error;await refresh()}catch(e){fail(e)}},
   evFiltro:function(f){S.evFiltro=f;renderEventos()},
-  agendaNova:function(){S.agendaEdit={ativa:true,dias:[1,2,3,4,5,6],hora_ligar:'08:00',hora_desligar:'18:00',reenviar_min:30,excecoes:[],local_id:null,dispositivo_id:null,codigo:null};renderAgendas();window.scrollTo(0,0)},
+  agendaNova:function(){S.agendaEdit={ativa:true,dias:[1,2,3,4,5,6],hora_ligar:'08:00',hora_desligar:'18:00',reenviar_min:30,excecoes:[],local_id:null,zona_id:null,dispositivo_id:null,codigo:null,escalonar_min:0};renderAgendas();window.scrollTo(0,0)},
   agendaEditar:function(id){S.agendaEdit=JSON.parse(JSON.stringify(S.agendas.filter(function(a){return a.id===id})[0]));renderAgendas();window.scrollTo(0,0)},
   agendaCancelar:function(){S.agendaEdit=null;renderAgendas()},
-  agendaCampo:function(k,v){agendaLerForm();var a=S.agendaEdit;a[k]=v||null;if(k==='local_id'){a.dispositivo_id=null;a.codigo=null}if(k==='dispositivo_id')a.codigo=null;if(k==='codigo'){a.valor_ligar=null;a.valor_desligar=null}if(k==='setpoint_codigo')a.setpoint_valor=null;renderAgendas()},
+  agendaCampo:function(k,v){agendaLerForm();var a=S.agendaEdit;a[k]=v||null;if(k==='local_id'){a.zona_id=null;a.dispositivo_id=null;a.codigo=null}if(k==='zona_id'){a.dispositivo_id=null;a.codigo=null;var z=zonaById(v);if(z)a.local_id=z.local_id}if(k==='dispositivo_id')a.codigo=null;if(k==='codigo'){a.valor_ligar=null;a.valor_desligar=null}if(k==='setpoint_codigo')a.setpoint_valor=null;renderAgendas()},
   agendaSalvar:async function(){try{agendaLerForm();var a=S.agendaEdit;
     if(!a.nome)throw new Error('De um nome a agenda.');if(!a.codigo)throw new Error('Escolha o comando.');if(!a.dias.length)throw new Error('Marque ao menos um dia.');
     if(a.valor_ligar==null||a.valor_desligar==null)throw new Error('Informe os valores ao ligar e ao desligar.');if(!a.hora_ligar||!a.hora_desligar)throw new Error('Informe os horarios.');
-    var p={cliente_id:S.perfil.cliente_id,nome:a.nome,ativa:a.ativa!==false,local_id:a.local_id||null,dispositivo_id:a.dispositivo_id||null,codigo:a.codigo,valor_ligar:a.valor_ligar,valor_desligar:a.valor_desligar,
-      dias:a.dias,hora_ligar:a.hora_ligar,hora_desligar:a.hora_desligar,excecoes:a.excecoes,setpoint_codigo:a.setpoint_codigo||null,setpoint_valor:a.setpoint_codigo?a.setpoint_valor:null,reenviar_min:a.reenviar_min};
+    var p={cliente_id:S.perfil.cliente_id,nome:a.nome,ativa:a.ativa!==false,local_id:a.local_id||null,zona_id:a.zona_id||null,dispositivo_id:a.dispositivo_id||null,codigo:a.codigo,valor_ligar:a.valor_ligar,valor_desligar:a.valor_desligar,
+      dias:a.dias,hora_ligar:a.hora_ligar,hora_desligar:a.hora_desligar,excecoes:a.excecoes,setpoint_codigo:a.setpoint_codigo||null,setpoint_valor:a.setpoint_codigo?a.setpoint_valor:null,reenviar_min:a.reenviar_min,escalonar_min:a.dispositivo_id?0:(a.escalonar_min||0)};
     var q=a.id?sb.from('agendas').update(p).eq('id',a.id):sb.from('agendas').insert(p);var x=await q;if(x.error)throw x.error;
     S.agendaEdit=null;toast('Agenda salva');await refresh()}catch(e){fail(e)}},
   agendaAtiva:async function(id,on){try{var r=await sb.from('agendas').update({ativa:on}).eq('id',id);if(r.error)throw r.error;await refresh()}catch(e){fail(e)}},
@@ -544,6 +605,20 @@ window.A={
   regraAtiva:async function(id,on){try{var r=await sb.from('regras').update({ativa:on,estado:'normal',condicao_desde:null}).eq('id',id);if(r.error)throw r.error;await refresh()}catch(e){fail(e)}},
   regraExcluir:async function(id){if(!confirm('Excluir esta regra?'))return;try{var r=await sb.from('regras').delete().eq('id',id);if(r.error)throw r.error;await refresh()}catch(e){fail(e)}},
   novoLocal:async function(){try{var n=val('nl-nome');if(!n)return;var r=await sb.from('locais').insert({cliente_id:S.perfil.cliente_id,nome:n});if(r.error)throw r.error;await refresh()}catch(e){fail(e)}},
+  zonaNova:function(){S.zonaEdit={ordem:S.zonas.length+1,modo:'agenda',sensor_codigo:'va_temperature',dispositivos:[]};renderConfig();window.scrollTo(0,0)},
+  zonaEditar:function(id){S.zonaEdit=JSON.parse(JSON.stringify(zonaById(id)));S.zonaEdit.dispositivos=(S.zonaDisp[id]||[]).slice();renderConfig();window.scrollTo(0,0)},
+  zonaCancelar:function(){S.zonaEdit=null;renderConfig()},
+  zonaCampo:function(k,v){zonaLerForm();S.zonaEdit[k]=v||null;if(k==='local_id'){S.zonaEdit.sensor_dispositivo_id=null;S.zonaEdit.dispositivos=[]}renderConfig()},
+  zonaSalvar:async function(){try{zonaLerForm();var z=S.zonaEdit;if(!z.nome)throw new Error('De um nome a zona.');if(!z.local_id)throw new Error('Escolha o local.');
+    if(z.modo==='temperatura'&&!z.sensor_dispositivo_id)throw new Error('O modo temperatura exige um sensor de referencia.');
+    if(z.temp_religar<=z.temp_desligar)throw new Error('A temperatura de religar deve ser maior que a de desligar.');
+    var p={cliente_id:S.perfil.cliente_id,local_id:z.local_id,nome:z.nome,ordem:z.ordem,sensor_dispositivo_id:z.sensor_dispositivo_id,sensor_codigo:z.sensor_codigo,modo:z.modo,temp_desligar:z.temp_desligar,temp_religar:z.temp_religar,
+      leituras_persistencia:z.leituras_persistencia,min_ligado_min:z.min_ligado_min,min_desligado_min:z.min_desligado_min,temp_emergencia:z.temp_emergencia,sensor_tolerancia_min:z.sensor_tolerancia_min};
+    var id=z.id;if(id){var u=await sb.from('zonas').update(p).eq('id',id);if(u.error)throw u.error}else{var i=await sb.from('zonas').insert(p).select('id').single();if(i.error)throw i.error;id=i.data.id}
+    var dl=await sb.from('zona_dispositivos').delete().eq('zona_id',id);if(dl.error)throw dl.error;
+    if(z.dispositivos.length){var ins=await sb.from('zona_dispositivos').insert(z.dispositivos.map(function(d){return {zona_id:id,dispositivo_id:d}}));if(ins.error)throw ins.error}
+    S.zonaEdit=null;toast('Zona salva');await refresh()}catch(e){fail(e)}},
+  zonaExcluir:async function(id){if(!confirm('Excluir esta zona? As agendas que a usam como alvo tambem serao excluidas.'))return;try{var r=await sb.from('zonas').delete().eq('id',id);if(r.error)throw r.error;await refresh()}catch(e){fail(e)}},
   novoUsuario:async function(){try{var em=val('nu-email');if(!em)throw new Error('Informe o e-mail.');
     var locs=Array.prototype.slice.call(document.querySelectorAll('.nu-local:checked')).map(function(c){return c.value});
     var r=await sb.from('usuarios').insert({cliente_id:S.perfil.cliente_id,email:em.toLowerCase(),nome:val('nu-nome'),papel:el('nu-papel').value,locais:locs.length?locs:null});if(r.error)throw r.error;toast('Usuario autorizado');renderConfig()}catch(e){fail(e)}},
