@@ -147,7 +147,7 @@ function ordemLeitura(a,b){var o={va_temperature:1,va_humidity:2,switch_1:3,swit
 async function loadBase(){
   var cid=S.perfil.cliente_id;
   var r=await Promise.all([
-    sb.from('dispositivos').select('*, tipos_dispositivo(nome), locais(nome)').eq('cliente_id',cid).order('nome'),
+    sb.from('dispositivos').select('*, tipos_dispositivo(nome), locais!dispositivos_local_id_fkey(nome)').eq('cliente_id',cid).order('nome'),
     sb.from('grandezas').select('*'),
     sb.from('locais').select('*').eq('cliente_id',cid).order('nome'),
     sb.from('eventos').select('*').eq('cliente_id',cid).order('aberto_em',{ascending:false}).limit(300),
